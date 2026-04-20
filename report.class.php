@@ -15,98 +15,36 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Configurable Reports a Moodle block for creating customizable reports
- *
- * @copyright  2020 Juan Leyva <juan@moodle.com>
- * @package    block_configurable_reports
- * @author     Juan leyva <http://www.twitter.com/jleyvadelgado>
- * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * Configurable Reports
+ * A Moodle block for creating Configurable Reports
+ * @package blocks
+ * @author: Juan leyva <http://www.twitter.com/jleyvadelgado>
+ * @date: 2009
  */
 
-defined('MOODLE_INTERNAL') || die;
-require_once($CFG->dirroot . '/lib/evalmath/evalmath.class.php');
-require_once($CFG->dirroot . '/blocks/configurable_reports/plugin.class.php');
+require_once($CFG->dirroot.'/lib/evalmath/evalmath.class.php');
 
-/**
- * Class report_base
- *
- * @package   block_configurable_reports
- * @author    Juan leyva <http://www.twitter.com/jleyvadelgado>
- * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- */
-abstract class report_base {
+#[AllowDynamicProperties]
+class report_base {
 
-    /**
-     * @var int
-     */
-    public int $id = 0;
-
-    /**
-     * @var array
-     */
-    public array $components = [];
-
-    /**
-     * @var object
-     */
+    public $id = 0;
+    public $components = array();
     public $finalreport;
-
-    /**
-     * @var int
-     */
-    public int $totalrecords = 0;
-
-    /**
-     * @var object|null
-     */
-    public ?object $currentuser;
-
-    /**
-     * @var int
-     */
-    public int $currentcourse = 0;
-
-    /**
-     * @var int
-     */
-    public int $starttime = 0;
-
-    /**
-     * @var int
-     */
-    public int $endtime = 0;
-
-    /**
-     * @var string
-     */
-    public string $sql = '';
-
-    /**
-     * @var null
-     */
+    public $totalrecords = 0;
+    public $currentuser = 0;
+    public $currentcourse = 0;
+    public $starttime = 0;
+    public $endtime = 0;
+    public $sql = '';
     public $filterform = null;
+    public $config;
+    public $currentcourseid;
 
-    /**
-     * @var int
-     */
-    private int $currentcourseid = 0;
-
-    /**
-     * @var false|mixed|stdClass
-     */
-    public ?object $config;
-
-    /**
-     * reports_base
-     *
-     * @param object|int $report
-     * @return void
-     */
-    public function reports_base($report): void {
+    public function reports_base($report) {
         global $DB, $CFG, $USER, $remotedb;
 
         if (is_numeric($report)) {
-            $this->config = $DB->get_record('block_configurable_reports', ['id' => $report]);
+            $this->config = $DB->get_record('block_configurable_reports', array('id' => $report));
         } else {
             $this->config = $report;
         }
@@ -122,8 +60,7 @@ abstract class report_base {
         $remotedbuser = get_config('block_configurable_reports', 'dbuser');
         $remotedbpass = get_config('block_configurable_reports', 'dbpass');
 
-        if (!empty($remotedbhost) && !empty($remotedbname) && !empty($remotedbuser) && !empty($remotedbpass) &&
-            $this->config->remote) {
+        if (!empty($remotedbhost) && !empty($remotedbname) && !empty($remotedbuser) && !empty($remotedbpass) && $this->config->remote) {
             $dbclass = get_class($DB);
             $remotedb = new $dbclass();
             $remotedb->connect($remotedbhost, $remotedbuser, $remotedbpass, $remotedbname, $CFG->prefix);
@@ -133,24 +70,12 @@ abstract class report_base {
 
     }
 
-    /**
-     * __construct
-     *
-     * @param object|int $report
-     */
     public function __construct($report) {
         $this->reports_base($report);
     }
 
-    /**
-     * Check permissions
-     *
-     * @param int $userid
-     * @param context $context
-     * @return bool|mixed|null
-     */
-    public function check_permissions(int $userid, context $context) {
-        global $CFG;
+    public function check_permissions($userid, $context) {
+        global $DB, $CFG, $USER;
 
         if (has_capability('block/configurable_reports:manageownreports', $context, $userid) && $this->config->ownerid == $userid) {
             return true;
@@ -165,74 +90,60 @@ abstract class report_base {
         }
 
         $components = cr_unserialize($this->config->components);
-        $permissions = $components['permissions'] ?? [];
+        $permissions = (isset($components['permissions'])) ? $components['permissions'] : [];
 
         if (empty($permissions['elements'])) {
             return has_capability('block/configurable_reports:viewreports', $context);
-        }
-
-        $i = 1;
-        $cond = [];
-        foreach ($permissions['elements'] as $p) {
-
-            require_once($CFG->dirroot . '/blocks/configurable_reports/components/permissions/' . $p['pluginname'] .
-                '/plugin.class.php');
-            $classname = 'plugin_' . $p['pluginname'];
-            $class = new $classname($this->config);
-            $cond[$i] = $class->execute($userid, $context, $p['formdata']);
-            $i++;
-        }
-
-        if (count($cond) === 1) {
-            return $cond[1];
-        }
-
-        $m = new EvalMath;
-        $orig = $dest = [];
-
-        if (isset($permissions['config']->conditionexpr)) {
-            $logic = trim($permissions['config']->conditionexpr);
-            // Security
-            // No more than: conditions * 10 chars.
-            $logic = substr($logic, 0, count($permissions['elements']) * 10);
-            $logic = str_replace(['and', 'or'], ['&&', '||'], strtolower($logic));
-            // More Security Only allowed chars.
-            $logic = preg_replace('/[^&c\d\s|()]/i', '', $logic);
-            $logic = str_replace(['&&', '||'], ['*', '+'], $logic);
-
-            for ($j = $i - 1; $j > 0; $j--) {
-                $orig[] = 'c' . $j;
-                $dest[] = ($cond[$j]) ? 1 : 0;
+        } else {
+            $i = 1;
+            $cond = array();
+            foreach ($permissions['elements'] as $p) {
+                require_once($CFG->dirroot.'/blocks/configurable_reports/plugin.class.php');
+                require_once($CFG->dirroot.'/blocks/configurable_reports/components/permissions/'.$p['pluginname'].'/plugin.class.php');
+                $classname = 'plugin_'.$p['pluginname'];
+                $class = new $classname($this->config);
+                $cond[$i] = $class->execute($userid, $context, $p['formdata']);
+                $i++;
             }
+            if (count($cond) == 1) {
+                return $cond[1];
+            } else {
+                $m = new EvalMath;
+                $orig = $dest = array();
 
-            return $m->evaluate(str_replace($orig, $dest, $logic));
+                if (isset($permissions['config']) && isset($permissions['config']->conditionexpr)) {
+                    $logic = trim($permissions['config']->conditionexpr);
+                    // Security
+                    // No more than: conditions * 10 chars.
+                    $logic = substr($logic, 0, count($permissions['elements']) * 10);
+                    $logic = str_replace(array('and', 'or'), array('&&', '||'), strtolower($logic));
+                    // More Security Only allowed chars.
+                    $logic = preg_replace('/[^&c\d\s|()]/i', '', $logic);
+                    $logic = str_replace(array('&&', '||'), array('*', '+'), $logic);
+
+                    for ($j = $i - 1; $j > 0; $j--) {
+                        $orig[] = 'c'.$j;
+                        $dest[] = ($cond[$j]) ? 1 : 0;
+                    }
+
+                    return $m->evaluate(str_replace($orig, $dest, $logic));
+                } else {
+                    return false;
+                }
+            }
         }
-
-        return false;
     }
 
-    /**
-     * add_filter_elements
-     *
-     * @param MoodleQuickForm $mform
-     * @return void
-     */
-    public function add_filter_elements(MoodleQuickForm $mform): void {
-        global $CFG;
+    public function add_filter_elements(&$mform) {
+        global $DB, $CFG;
 
         $components = cr_unserialize($this->config->components);
-        $filters = $components['filters']['elements'] ?? [];
+        $filters = (isset($components['filters']['elements'])) ? $components['filters']['elements'] : array();
 
-        require_once($CFG->dirroot . '/blocks/configurable_reports/plugin.class.php');
+        require_once($CFG->dirroot.'/blocks/configurable_reports/plugin.class.php');
         foreach ($filters as $f) {
-
-            if (is_array($f['pluginname'])) {
-                $f['pluginname'] = $f['pluginname'][0];
-            }
-
-            $filename = clean_filename($f['pluginname']);
-            require_once($CFG->dirroot . '/blocks/configurable_reports/components/filters/' . $filename . '/plugin.class.php');
-            $classname = 'plugin_' . $filename;
+            require_once($CFG->dirroot.'/blocks/configurable_reports/components/filters/'.$f['pluginname'].'/plugin.class.php');
+            $classname = 'plugin_'.$f['pluginname'];
             $class = new $classname($this->config);
 
             $finalelements = $class->print_filter($mform, $f['formdata']);
@@ -240,15 +151,12 @@ abstract class report_base {
         }
     }
 
-    /**
-     * check_filters_request
-     *
-     * @return void
-     */
-    public function check_filters_request(): void {
+
+    public function check_filters_request() {
+        global $DB, $CFG;
 
         $components = cr_unserialize($this->config->components);
-        $filters = $components['filters']['elements'] ?? [];
+        $filters = (isset($components['filters']['elements'])) ? $components['filters']['elements'] : array();
 
         if (!empty($filters)) {
 
@@ -275,38 +183,27 @@ abstract class report_base {
 
             if ($filterform->is_cancelled()) {
                 $params = ['id' => $this->config->id, 'courseid' => $this->config->courseid];
-                redirect(new moodle_url('/blocks/configurable_reports/viewreport.php', $params));
+                redirect(new \moodle_url('/blocks/configurable_reports/viewreport.php', $params));
                 die;
             }
             $this->filterform = $filterform;
         }
     }
 
-    /**
-     * print_filters
-     *
-     * @return void
-     */
-    public function print_filters(): void {
-        if ($this->filterform !== null) {
+    public function print_filters() {
+        if (!is_null($this->filterform)) {
             $this->filterform->display();
         }
     }
 
-    /**
-     * print_graphs
-     *
-     * @param bool $return
-     * @return string|true
-     */
-    public function print_graphs(bool $return = false) {
+    public function print_graphs($return = false) {
         $output = '';
         $graphs = $this->get_graphs($this->finalreport->table->data);
 
         if ($graphs) {
             foreach ($graphs as $g) {
                 $output .= '<div class="centerpara">';
-                $output .= ' <img src="' . $g . '" alt="' . s($this->config->name) . '"><br />';
+                $output .= ' <img src="'.$g.'" alt="'.$this->config->name.'"><br />';
                 $output .= '</div>';
             }
         }
@@ -315,65 +212,43 @@ abstract class report_base {
         }
 
         echo $output;
-
         return true;
     }
 
-    /**
-     * print_export_options
-     *
-     * @param bool $return
-     * @return string|true
-     */
-    public function print_export_options(bool $return = false) {
+
+    public function print_export_options($return = false) {
         global $CFG;
 
         $wwwpath = $CFG->wwwroot;
-
-        // TODO move to more Moodle approach.
         $request = array_merge($_POST, $_GET);
-
         if ($request) {
             $id = clean_param($request['id'], PARAM_INT);
-            $wwwpath = 'viewreport.php?id=' . $id;
+            $wwwpath = 'viewreport.php?id='.$id;
             unset($request['id']);
-
             foreach ($request as $key => $val) {
-
-                $key = s(clean_param($key, PARAM_CLEANHTML));
-
+                $key = clean_param($key, PARAM_CLEANHTML);
                 if (is_array($val)) {
                     foreach ($val as $k => $v) {
-                        $k = s(clean_param($k, PARAM_CLEANHTML));
-                        $v = s(clean_param($v, PARAM_CLEANHTML));
-                        $wwwpath .= "&{$key}[$k]=" . $v;
+                        $k = clean_param($k, PARAM_CLEANHTML);
+                        $v = clean_param($v, PARAM_CLEANHTML);
+                        $wwwpath .= "&amp;{$key}[$k]=".$v;
                     }
                 } else {
                     $val = clean_param($val, PARAM_CLEANHTML);
-                    $wwwpath .= "&$key=" . s($val);
+                    $wwwpath .= "&amp;$key=".$val;
                 }
             }
         }
 
         $output = '';
         $export = explode(',', $this->config->export);
-
         if (!empty($this->config->export)) {
             $output .= '<br /><div class="centerpara">';
-            $output .= get_string('downloadreport', 'block_configurable_reports') . ': ';
-
+            $output .= get_string('downloadreport', 'block_configurable_reports').': ';
             foreach ($export as $e) {
-
-                if (empty($e)) {
-                    continue;
+                if ($e) {
+                    $output .= '<a href="'.$wwwpath.'&amp;download=1&amp;format='.$e.'"><img src="'.$CFG->wwwroot.'/blocks/configurable_reports/export/'.$e.'/pix.gif" alt="'.$e.'">&nbsp;'.(strtoupper($e)).'</a>&nbsp;';
                 }
-
-                // TODO Use moodle_url.
-                $output .= '<a href="' . s($wwwpath) . '&download=1&format=' . s($e) . '">
-                                    <img src="' . $CFG->wwwroot . '/blocks/configurable_reports/export/' . s($e) . '/pix.gif"
-                                     alt="' . s($e) . '">
-                                    &nbsp;' . (s(strtoupper($e))) .
-                    '</a>&nbsp;';
             }
             $output .= '</div>';
         }
@@ -383,93 +258,65 @@ abstract class report_base {
         }
 
         echo $output;
-
         return true;
     }
 
-    /**
-     * Update conditions
-     *
-     * @param array $data
-     * @param string $logic
-     * @return bool|mixed|null
-     */
-    public function evaluate_conditions(array $data, string $logic) {
-        global $CFG;
+    public function evaluate_conditions($data, $logic) {
+        global $DB, $CFG;
 
-        require_once($CFG->dirroot . '/blocks/configurable_reports/reports/evalwise.class.php');
+        require_once($CFG->dirroot.'/blocks/configurable_reports/reports/evalwise.class.php');
 
-        $logic = strtolower(trim($logic));
+        $logic = trim(strtolower($logic));
         $logic = substr($logic, 0, count($data) * 10);
-        $logic = str_replace(['or', 'and', 'not'], ['+', '*', '-'], $logic);
+        $logic = str_replace(array('or', 'and', 'not'), array('+', '*', '-'), $logic);
         $logic = preg_replace('/[^\*c\d\s\+\-()]/i', '', $logic);
 
-        $orig = $dest = [];
+        $orig = $dest = array();
         for ($j = count($data); $j > 0; $j--) {
-            $orig[] = 'c' . $j;
+            $orig[] = 'c'.$j;
             $dest[] = $j;
         }
         $logic = str_replace($orig, $dest, $logic);
 
-        $m = new EvalWise();
-        $m->set_data($data);
+        $m = new \EvalWise();
 
-        return $m->evaluate($logic);
+        $m->set_data($data);
+        $result = $m->evaluate($logic);
+        return $result;
     }
 
-    /**
-     * get_graphs
-     *
-     * @param array $finalreport
-     * @return array
-     */
-    public function get_graphs($finalreport): array {
-        global $CFG;
+    public function get_graphs($finalreport) {
+        global $DB, $CFG;
 
         $components = cr_unserialize($this->config->components);
-        $graphs = $components['plot']['elements'] ?? [];
+        $graphs = (isset($components['plot']['elements'])) ? $components['plot']['elements'] : array();
 
-        $reportgraphs = [];
+        $reportgraphs = array();
 
         if (!empty($graphs)) {
-            $series = [];
-
+            $series = array();
             foreach ($graphs as $g) {
-                require_once($CFG->dirroot . '/blocks/configurable_reports/components/plot/' . $g['pluginname'] .
-                    '/plugin.class.php');
-                $classname = 'plugin_' . $g['pluginname'];
+                require_once($CFG->dirroot.'/blocks/configurable_reports/components/plot/'.$g['pluginname'].'/plugin.class.php');
+                $classname = 'plugin_'.$g['pluginname'];
                 $class = new $classname($this->config);
                 $reportgraphs[] = $class->execute($g['id'], $g['formdata'], $finalreport);
             }
         }
-
         return $reportgraphs;
     }
 
-    /**
-     * get_calcs
-     *
-     * @param array $finaltable
-     * @param array $tablehead
-     * @return array
-     */
-    public function get_calcs(array $finaltable, array $tablehead): array {
-        global $CFG;
+    public function get_calcs($finaltable, $tablehead) {
+        global $DB, $CFG;
 
         $components = cr_unserialize($this->config->components);
-        $calcs = $components['calcs']['elements'] ?? [];
+        $calcs = (isset($components['calcs']['elements'])) ? $components['calcs']['elements'] : array();
 
         // Calcs doesn't work with multi-rows so far.
-        $columnscalcs = [];
-        $finalcalcs = [];
+        $columnscalcs = array();
+        $finalcalcs = array();
         if (!empty($calcs)) {
             foreach ($calcs as $calc) {
-
-                if (!isset($calc['formdata']->column)) {
-                    continue;
-                }
-
-                $columnscalcs[$calc['formdata']->column] = [];
+                $columnscalcs[$calc['formdata']->column] = array();
             }
 
             $columnstostore = array_keys($columnscalcs);
@@ -483,21 +330,14 @@ abstract class report_base {
             }
 
             foreach ($calcs as $calc) {
-
-                if (is_array($calc['pluginname'])) {
-                    $calc['pluginname'] = $calc['pluginname'][0];
-                }
-
-                $filename = clean_filename($calc['pluginname']);
-                require_once($CFG->dirroot . '/blocks/configurable_reports/components/calcs/' . $filename . '/plugin.class.php');
-                $classname = 'plugin_' . $filename;
-
+                require_once($CFG->dirroot.'/blocks/configurable_reports/components/calcs/'.$calc['pluginname'].'/plugin.class.php');
+                $classname = 'plugin_'.$calc['pluginname'];
                 $class = new $classname($this->config);
                 $result = $class->execute($columnscalcs[$calc['formdata']->column]);
                 $finalcalcs[$calc['formdata']->column] = $result;
             }
 
-            for ($i = 0, $imax = count($tablehead); $i < $imax; $i++) {
+            for ($i = 0; $i < count($tablehead); $i++) {
                 if (!isset($finalcalcs[$i])) {
                     $finalcalcs[$i] = '';
                 }
@@ -506,35 +346,28 @@ abstract class report_base {
             ksort($finalcalcs);
 
         }
-
         return $finalcalcs;
     }
 
-    /**
-     * elements_by_conditions
-     *
-     * @param array $conditions
-     * @return bool|mixed|null
-     */
     public function elements_by_conditions($conditions) {
-        global $CFG;
+        global $DB, $CFG;
 
         if (empty($conditions['elements'])) {
-            return $this->get_all_elements();
+            $finalelements = $this->get_all_elements();
+            return $finalelements;
         }
 
-        $finalelements = [];
+        $finalelements = array();
         $i = 1;
         foreach ($conditions['elements'] as $c) {
-            require_once($CFG->dirroot . '/blocks/configurable_reports/components/conditions/' . $c['pluginname'] .
-                '/plugin.class.php');
-            $classname = 'plugin_' . $c['pluginname'];
+            require_once($CFG->dirroot.'/blocks/configurable_reports/components/conditions/'.$c['pluginname'].'/plugin.class.php');
+            $classname = 'plugin_'.$c['pluginname'];
             $class = new $classname($this->config);
             $elements[$i] = $class->execute($c['formdata'], $this->currentuser, $this->currentcourseid);
             $i++;
         }
 
-        if (count($conditions['elements']) === 1) {
+        if (count($conditions['elements']) == 1) {
             $finalelements = $elements[1];
         } else {
             $logic = $conditions['config']->conditionexpr;
@@ -550,18 +383,18 @@ abstract class report_base {
     /**
      * Returns a report object
      */
-    public function create_report(): bool {
-        global $CFG;
+    public function create_report() {
+        global $DB, $CFG;
 
         // Conditions.
         $components = cr_unserialize($this->config->components);
 
-        $conditions = $components['conditions']['elements'] ?? [];
-        $filters = $components['filters']['elements'] ?? [];
-        $columns = $components['columns']['elements'] ?? [];
-        $ordering = $components['ordering']['elements'] ?? [];
+        $conditions = (isset($components['conditions']['elements'])) ? $components['conditions']['elements'] : array();
+        $filters = (isset($components['filters']['elements'])) ? $components['filters']['elements'] : array();
+        $columns = (isset($components['columns']['elements'])) ? $components['columns']['elements'] : array();
+        $ordering = (isset($components['ordering']['elements'])) ? $components['ordering']['elements'] : array();
 
-        $finalelements = [];
+        $finalelements = array();
 
         if (!empty($conditions)) {
             $finalelements = $this->elements_by_conditions($components['conditions']);
@@ -571,11 +404,11 @@ abstract class report_base {
         }
 
         // Filters.
+
         if (!empty($filters)) {
             foreach ($filters as $f) {
-                require_once($CFG->dirroot . '/blocks/configurable_reports/components/filters/' . $f['pluginname'] .
-                    '/plugin.class.php');
-                $classname = 'plugin_' . $f['pluginname'];
+                require_once($CFG->dirroot.'/blocks/configurable_reports/components/filters/'.$f['pluginname'].'/plugin.class.php');
+                $classname = 'plugin_'.$f['pluginname'];
                 $class = new $classname($this->config);
                 $finalelements = $class->execute($finalelements, $f['formdata']);
             }
@@ -585,12 +418,11 @@ abstract class report_base {
 
         $sqlorder = '';
 
-        $orderingdata = [];
+        $orderingdata = array();
         if (!empty($ordering)) {
             foreach ($ordering as $o) {
-                require_once($CFG->dirroot . '/blocks/configurable_reports/components/ordering/' . $o['pluginname'] .
-                    '/plugin.class.php');
-                $classname = 'plugin_' . $o['pluginname'];
+                require_once($CFG->dirroot.'/blocks/configurable_reports/components/ordering/'.$o['pluginname'].'/plugin.class.php');
+                $classname = 'plugin_'.$o['pluginname'];
                 $classorder = new $classname($this->config);
                 $orderingdata = $o['formdata'];
                 if ($classorder->sql) {
@@ -607,28 +439,24 @@ abstract class report_base {
             $rows = $classorder->execute($rows, $orderingdata);
         }
 
-        $reporttable = [];
-        $tablehead = [];
-        $tablealign = [];
-        $tablesize = [];
-        $tablewrap = [];
+        $reporttable = array();
+        $tablehead = array();
+        $tablealign = array();
+        $tablesize = array();
+        $tablewrap = array();
         $firstrow = true;
 
-        $pluginscache = [];
+        $pluginscache = array();
 
         if ($rows) {
             foreach ($rows as $r) {
-
-                $tempcols = [];
+                $tempcols = array();
                 foreach ($columns as $c) {
                     if (empty($c)) {
                         continue;
                     }
-
-                    require_once($CFG->dirroot . '/blocks/configurable_reports/components/columns/' . $c['pluginname'] .
-                        '/plugin.class.php');
-                    $classname = 'plugin_' . $c['pluginname'];
-
+                    require_once($CFG->dirroot.'/blocks/configurable_reports/components/columns/'.$c['pluginname'].'/plugin.class.php');
+                    $classname = 'plugin_'.$c['pluginname'];
                     if (!isset($pluginscache[$classname])) {
                         $class = new $classname($this->config, $c);
                         $pluginscache[$classname] = $class;
@@ -636,18 +464,10 @@ abstract class report_base {
                         $class = $pluginscache[$classname];
                     }
 
-                    $tempcols[] = $class->execute(
-                        $c['formdata'],
-                        $r,
-                        $this->currentuser,
-                        $this->currentcourseid,
-                        $this->starttime,
-                        $this->endtime
-                    );
-
+                    $tempcols[] = $class->execute($c['formdata'], $r, $this->currentuser, $this->currentcourseid, $this->starttime, $this->endtime);
                     if ($firstrow) {
                         $tablehead[] = $class->summary($c['formdata']);
-                        [$align, $size, $wrap] = $class->colformat($c['formdata']);
+                        list($align, $size, $wrap) = $class->colformat($c['formdata']);
                         $tablealign[] = $align;
                         $tablesize[] = $size;
                         $tablewrap[] = $wrap;
@@ -660,13 +480,14 @@ abstract class report_base {
         }
 
         // EXPAND ROWS.
-        $finaltable = [];
+        $finaltable = array();
+        $newcols = array();
 
         foreach ($reporttable as $row) {
-            $col = [];
+            $col = array();
             $multiple = false;
             $nrows = 0;
-            $mrowsi = [];
+            $mrowsi = array();
 
             foreach ($row as $key => $cell) {
                 if (!is_array($cell)) {
@@ -678,7 +499,7 @@ abstract class report_base {
                 }
             }
             if ($multiple) {
-                $newrows = [];
+                $newrows = array();
                 for ($i = 0; $i < $nrows; $i++) {
                     $newrows[$i] = $row;
                     foreach ($mrowsi as $index) {
@@ -698,7 +519,7 @@ abstract class report_base {
 
         // Make the table, head, columns, etc...
 
-        $table = new stdClass;
+        $table = new \stdClass;
         $table->id = 'reporttable';
         $table->data = $finaltable;
         $table->head = $tablehead;
@@ -712,18 +533,17 @@ abstract class report_base {
         $table->cellspacing = (isset($components['columns']['config'])) ? $components['columns']['config']->cellspacing : '1';
         $table->class = (isset($components['columns']['config'])) ? $components['columns']['config']->class : 'generaltable';
 
-        $calcs = new html_table();
-        $calcs->data = [$finalcalcs];
+        $calcs = new \html_table();
+        $calcs->data = array($finalcalcs);
         $calcs->head = $tablehead;
         $calcs->size = $tablesize;
         $calcs->align = $tablealign;
         $calcs->wrap = $tablewrap;
         $calcs->summary = $this->config->summary;
-        $calcs->attributes['class'] =
-            (isset($components['columns']['config'])) ? $components['columns']['config']->class : 'generaltable';
+        $calcs->attributes['class'] = (isset($components['columns']['config'])) ? $components['columns']['config']->class : 'generaltable';
 
         if (!$this->finalreport) {
-            $this->finalreport = new stdClass;
+            $this->finalreport = new \stdClass;
         }
         $this->finalreport->name = $this->config->name;
         $this->finalreport->table = $table;
@@ -733,56 +553,40 @@ abstract class report_base {
 
     }
 
-    /**
-     * add_jsordering
-     *
-     * @param moodle_page $moodlepage
-     * @return void
-     */
-    public function add_jsordering(moodle_page $moodlepage): void {
+    public function add_jsordering(\moodle_page $moodle_page) {
         switch (get_config('block_configurable_reports', 'reporttableui')) {
             case 'datatables':
-                cr_add_jsdatatables('#reporttable', $moodlepage);
+                cr_add_jsdatatables('#reporttable', $moodle_page);
                 break;
             case 'jquery':
-                cr_add_jsordering('#reporttable', $moodlepage);
-                echo html_writer::tag(
-                    'style',
+                cr_add_jsordering('#reporttable', $moodle_page);
+                echo html_writer::tag('style',
                     '#page-blocks-configurable_reports-viewreport .generaltable {
                     overflow: auto;
                     width: 100%;
-                    display: block;}'
-                );
+                    display: block;}');
                 break;
             case 'html':
-                echo html_writer::tag(
-                    'style',
+                echo html_writer::tag('style',
                     '#page-blocks-configurable_reports-viewreport .generaltable {
                     overflow: auto;
                     width: 100%;
-                    display: block;}'
-                );
+                    display: block;}');
                 break;
             default:
                 break;
         }
+
     }
 
-    /**
-     * print_template
-     *
-     * @param object $config
-     * @param moodle_page $moodlepage
-     * @return void
-     */
-    public function print_template($config, moodle_page $moodlepage): void {
-        global $OUTPUT;
+    public function print_template($config, \moodle_page $moodle_page) {
+        global $DB, $CFG, $OUTPUT;
 
-        $pagecontents = [];
+        $pagecontents = array();
         $pagecontents['header'] = (isset($config->header) && $config->header) ? $config->header : '';
         $pagecontents['footer'] = (isset($config->footer) && $config->footer) ? $config->footer : '';
 
-        $recordtpl = (isset($config->record) && $config->record) ? $config->record : '';
+        $recordtpl = (isset($config->record) && $config->record) ? $config->record : '';;
 
         $calculations = '';
 
@@ -798,29 +602,23 @@ abstract class report_base {
             if ($request) {
                 foreach ($request as $key => $val) {
                     if (strpos($key, 'filter_') !== false) {
-                        $key = s(clean_param($key, PARAM_CLEANHTML));
+                        $key = clean_param($key, PARAM_CLEANHTML);
                         if (is_array($val)) {
                             foreach ($val as $k => $v) {
-                                $k = s(clean_param($k, PARAM_CLEANHTML));
-                                $v = s(clean_param($v, PARAM_CLEANHTML));
-                                $postfiltervars .= "&amp;{$key}[$k]=" . $v;
+                                $k = clean_param($k, PARAM_CLEANHTML);
+                                $v = clean_param($v, PARAM_CLEANHTML);
+                                $postfiltervars .= "&amp;{$key}[$k]=".$v;
                             }
                         } else {
-                            $val = s(clean_param($val, PARAM_CLEANHTML));
-                            $postfiltervars .= "&amp;$key=" . $val;
+                            $val = clean_param($val, PARAM_CLEANHTML);
+                            $postfiltervars .= "&amp;$key=".$val;
                         }
                     }
                 }
             }
 
             $this->totalrecords = count($this->finalreport->table->data);
-            $pagingbar = new paging_bar(
-                $this->totalrecords,
-                $page,
-                $this->config->pagination,
-                "viewreport.php?id=" . s($this->config->id) . "&courseid=" . ((int) $this->config->courseid) .
-                "$postfiltervars&amp;"
-            );
+            $pagingbar = new \paging_bar($this->totalrecords, $page, $this->config->pagination, "viewreport.php?id=".$this->config->id."&courseid=".$this->config->courseid."$postfiltervars&amp;");
             $pagingbar->pagevar = 'page';
             $pagination = $OUTPUT->render($pagingbar);
         }
@@ -831,7 +629,7 @@ abstract class report_base {
             '##graphs##',
             '##exportoptions##',
             '##calculationstable##',
-            '##pagination##',
+            '##pagination##'
         ];
         $replace = [
             format_string($this->config->name),
@@ -839,7 +637,7 @@ abstract class report_base {
             $this->print_graphs(true),
             $this->print_export_options(true),
             $calculations,
-            $pagination,
+            $pagination
         ];
 
         foreach ($pagecontents as $key => $p) {
@@ -849,7 +647,7 @@ abstract class report_base {
         }
 
         if ($this->config->jsordering) {
-            $this->add_jsordering($moodlepage);
+            $this->add_jsordering($moodle_page);
         }
         $this->print_filters();
 
@@ -861,18 +659,15 @@ abstract class report_base {
             echo format_text($pagecontents['header'], FORMAT_HTML);
         }
 
-        if ($this->config->displaytotalrecords) {
-            $a = new \stdClass();
-            $a->totalrecords = $this->totalrecords;
-            echo \html_writer::tag('div', get_string('totalrecords', 'block_configurable_reports', $a), array('id' => 'totalrecords'));
-        }
+        $a = new \stdClass();
+        $a->totalrecords = $this->totalrecords;
+        echo \html_writer::tag('div', get_string('totalrecords', 'block_configurable_reports', $a), array('id' => 'totalrecords'));
 
         if ($recordtpl) {
             if ($this->config->pagination) {
                 $page = optional_param('page', 0, PARAM_INT);
                 $this->totalrecords = count($this->finalreport->table->data);
-                $this->finalreport->table->data =
-                    array_slice($this->finalreport->table->data, $page * $this->config->pagination, $this->config->pagination);
+                $this->finalreport->table->data = array_slice($this->finalreport->table->data, $page * $this->config->pagination, $this->config->pagination);
             }
 
             foreach ($this->finalreport->table->data as $r) {
@@ -881,7 +676,7 @@ abstract class report_base {
                 } else {
                     $recordtext = $recordtpl;
                 }
-
+                
                 foreach ($this->finalreport->table->head as $key => $c) {
                     $recordtext = str_ireplace("[[$c]]", $r[$key], $recordtext);
                 }
@@ -897,43 +692,31 @@ abstract class report_base {
         }
 
         echo "</div>\n";
-        if ($this->config->displayprintbutton) {
-            echo '<div class="centerpara"><br />';
-            echo $OUTPUT->pix_icon('print', get_string('printreport', 'block_configurable_reports'), 'block_configurable_reports');
-            echo "&nbsp;<a href=\"javascript: printDiv('printablediv')\">".get_string('printreport', 'block_configurable_reports')."</a>";
-            echo "</div>\n";
-        }
+        echo '<div class="centerpara"><br />';
+        echo $OUTPUT->pix_icon('print', get_string('printreport', 'block_configurable_reports'), 'block_configurable_reports');
+        echo "&nbsp;<a href=\"javascript: printDiv('printablediv')\">".get_string('printreport', 'block_configurable_reports')."</a>";
+        echo "</div>\n";
     }
 
-    /**
-     * print_report_page
-     *
-     * @param moodle_page $moodlepage
-     * @return true|void
-     */
-    public function print_report_page(moodle_page $moodlepage) {
-        global $OUTPUT;
+    public function print_report_page(\moodle_page $moodlepage) {
+        global $DB, $CFG, $OUTPUT, $USER;
 
-        if ($this->config->displayprintbutton) {
-            cr_print_js_function();
-        }
+        cr_print_js_function();
         $components = cr_unserialize($this->config->components);
 
-        $template = (isset($components['template']['config']) && $components['template']['config']->enabled &&
-            $components['template']['config']->record) ? $components['template']['config'] : false;
+        $template = (isset($components['template']['config']) && $components['template']['config']->enabled && $components['template']['config']->record) ? $components['template']['config'] : false;
 
         if ($template) {
             $this->print_template($template, $moodlepage);
-
             return true;
         }
 
         // Debug.
         $debug = optional_param('debug', false, PARAM_BOOL);
-        if ($debug || !empty($this->config->debug)) {
-            echo html_writer::empty_tag('hr');
-            echo html_writer::tag('div', $this->sql, ['id' => 'debug', 'style' => 'direction:ltr;text-align:left;']);
-            echo html_writer::empty_tag('hr');
+        if ($debug or !empty($this->config->debug)) {
+            echo \html_writer::empty_tag('hr');
+            echo \html_writer::tag('div', $this->sql, ['id' => 'debug', 'style' => 'direction:ltr;text-align:left;']);
+            echo \html_writer::empty_tag('hr');
         }
 
         echo '<div class="centerpara">';
@@ -954,8 +737,7 @@ abstract class report_base {
             if ($this->config->pagination) {
                 $page = optional_param('page', 0, PARAM_INT);
                 $this->totalrecords = count($this->finalreport->table->data);
-                $this->finalreport->table->data =
-                    array_slice($this->finalreport->table->data, $page * $this->config->pagination, $this->config->pagination);
+                $this->finalreport->table->data = array_slice($this->finalreport->table->data, $page * $this->config->pagination, $this->config->pagination);
             }
 
             cr_print_table($this->finalreport->table);
@@ -966,72 +748,52 @@ abstract class report_base {
                 if ($request) {
                     foreach ($request as $key => $val) {
                         if (strpos($key, 'filter_') !== false) {
-                            $key = s(clean_param($key, PARAM_CLEANHTML));
+                            $key = clean_param($key, PARAM_CLEANHTML);
                             if (is_array($val)) {
                                 foreach ($val as $k => $v) {
-                                    $k = s(clean_param($k, PARAM_CLEANHTML));
-                                    $v = s(clean_param($v, PARAM_CLEANHTML));
-                                    $postfiltervars .= "&amp;{$key}[$k]=" . $v;
+                                    $k = clean_param($k, PARAM_CLEANHTML);
+                                    $v = clean_param($v, PARAM_CLEANHTML);
+                                    $postfiltervars .= "&amp;{$key}[$k]=".$v;
                                 }
                             } else {
-                                $val = s(clean_param($val, PARAM_CLEANHTML));
-                                $postfiltervars .= "&amp;$key=" . $val;
+                                $val = clean_param($val, PARAM_CLEANHTML);
+                                $postfiltervars .= "&amp;$key=".$val;
                             }
                         }
                     }
                 }
 
-                $pagingbar = new paging_bar(
-                    $this->totalrecords,
-                    $page,
-                    $this->config->pagination,
-                    "viewreport.php?id=" . s($this->config->id) . "&courseid=" . s($this->config->courseid) . "$postfiltervars&amp;"
-                );
+                $pagingbar = new paging_bar($this->totalrecords, $page, $this->config->pagination, "viewreport.php?id=".$this->config->id."&courseid=".$this->config->courseid."$postfiltervars&amp;");
                 $pagingbar->pagevar = 'page';
                 echo $OUTPUT->render($pagingbar);
             }
 
             // Report statistics.
-            $a = new stdClass();
+            $a = new \stdClass();
             $a->totalrecords = $this->totalrecords;
-            echo html_writer::tag('div', get_string('totalrecords', 'block_configurable_reports', $a), ['id' => 'totalrecords']);
+            echo \html_writer::tag('div', get_string('totalrecords', 'block_configurable_reports', $a), ['id' => 'totalrecords']);
 
-            echo html_writer::tag(
-                'div',
-                get_string('lastexecutiontime', 'block_configurable_reports', $this->config->lastexecutiontime / 1000),
-                ['id' => 'lastexecutiontime']
-            );
+            echo \html_writer::tag('div', get_string('lastexecutiontime', 'block_configurable_reports', $this->config->lastexecutiontime / 1000), array('id' => 'lastexecutiontime'));
 
             if (!empty($this->finalreport->calcs->data[0])) {
-                echo '<br /><br /><br /><div class="centerpara"><b>' .
-                    get_string('columncalculations', 'block_configurable_reports') . '</b></div><br />';
+                echo '<br /><br /><br /><div class="centerpara"><b>'.get_string('columncalculations', 'block_configurable_reports').'</b></div><br />';
                 echo html_writer::table($this->finalreport->calcs);
             }
             echo "</div>";
 
             $this->print_export_options();
         } else {
-            echo '<div class="centerpara">' . get_string('norecordsfound', 'block_configurable_reports') . '</div>';
+            echo '<div class="centerpara">'.get_string('norecordsfound', 'block_configurable_reports').'</div>';
         }
 
-        if ($this->config->displayprintbutton) {
-            echo '<div class="centerpara"><br />';
-            echo $OUTPUT->pix_icon('print', get_string('printreport', 'block_configurable_reports'), 'block_configurable_reports');
-            echo "&nbsp;<a href=\"javascript: printDiv('printablediv')\">".get_string('printreport', 'block_configurable_reports')."</a>";
-            echo "</div>\n";
-        }
+        echo '<div class="centerpara"><br />';
+        echo $OUTPUT->pix_icon('print', get_string('printreport', 'block_configurable_reports'), 'block_configurable_reports');
+        echo "&nbsp;<a href=\"javascript: printDiv('printablediv')\">".get_string('printreport', 'block_configurable_reports')."</a>";
+        echo "</div>\n";
     }
 
-    /**
-     * utf8_strrev
-     *
-     * @param string $str
-     * @return string
-     */
-    public function utf8_strrev(string $str): string {
+    public function utf8_strrev($str) {
         preg_match_all('/./us', $str, $ar);
-
-        return implode('', array_reverse($ar[0]));
+        return join('', array_reverse($ar[0]));
     }
-
 }
