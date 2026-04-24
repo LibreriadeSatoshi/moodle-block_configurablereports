@@ -90,7 +90,8 @@ function export_report($report) {
                         $pr->setAccessible(true);
                         $internal_ws = $pr->getValue($myxls);
                         // Set the label as the visible text, maintaining the link created by write_url.
-                        $internal_ws->setCellValueByColumnAndRow($col_idx + 1, $row_idx + 1, $label);
+                        $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($col_idx + 1);
+                        $internal_ws->getCell($colLetter . ($row_idx + 1))->setValue($label);
                     } catch (Exception $e) {
                         // Fallback to URL if reflection fails.
                     }
