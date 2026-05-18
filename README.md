@@ -1,5 +1,5 @@
 # Moodle Configurable Reports
-# Librería de Satoshi Edition
+Librería de Satoshi Edition
 
 > **Note:** This repository is a customized fork of the official [Configurable Reports plugin by jleyva](https://github.com/jleyva/moodle-block_configurablereports). 
 
