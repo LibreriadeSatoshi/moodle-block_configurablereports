@@ -28,7 +28,7 @@
 
   "autoload": {
     "classmap": [
-      "pChart/"
+      "class/"
     ]
   },
 
